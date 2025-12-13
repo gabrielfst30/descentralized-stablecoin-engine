@@ -29,6 +29,7 @@ import {DecentralizedStableCoin} from "./DecentralizedStableCoin.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 // interface for ERC20 tokens to make interactions
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 
 /**
  * @title Decentralized Stable Coin
@@ -60,6 +61,8 @@ contract DSCEngine is ReentrancyGuard {
     ////////////////////////
     // State Variables    //
     ////////////////////////
+    uint265 private constant ADDITIONNAL_FEED_PRECISION = 1e10; // to bring price feed to 18 decimals
+    uint265 private constant PRECISION = 1e18;
 
     // array of collateral token addresses
     mapping(address token => address priceFeed) private s_priceFeeds; // token address -> price feed address
@@ -249,15 +252,69 @@ contract DSCEngine is ReentrancyGuard {
     /////////////////////////////////////////
     // Public and External View Functions ///
     /////////////////////////////////////////
+
+    /**
+     * @notice Calculates the total USD value of all collateral deposited by a user
+     * @dev Iterates through all accepted collateral tokens and sums their USD values.
+     * For each token: gets user's deposited amount → converts to USD via getUsdValue() → accumulates total
+     * @param user The address of the user to check collateral value for
+     * @return totalCollateralValueInUsd The total value of user's collateral in USD (18 decimals)
+     * 
+     * Process:
+     * 1. Loop through s_collateralTokens array (all accepted collateral types)
+     * 2. For each token: query s_collateralDeposited[user][token] to get deposited amount
+     * 3. Call getUsdValue(token, amount) to convert token amount to USD using Chainlink prices
+     * 4. Sum all USD values to get total collateral value
+     * 
+     * Example: User deposited 2 ETH + 0.1 BTC → returns total USD value (e.g., $6000 + $4000 = $10000)
+     */
     function getAccountCollateralValue(
         address user
-    ) public view returns (uint256) {
+    ) public view returns (uint256 totalCollateralValueInUsd) {
         // loop through each collateral token, get the amount deposited and the price
         // calculate the USD value and sum it all up
-        for(uint i = 0; i < s_collateralTokens.length; i++) {
+        for (uint i = 0; i < s_collateralTokens.length; i++) {
             address token = s_collateralTokens[i]; // get the token address
             uint256 amount = s_collateralDeposited[user][token]; // get the amount deposited
-
+            totalCollateralValueInUsd += getUsdValue(token, amount); // get the USD value and sum it up
         }
+
+        return totalCollateralValueInUsd;
+    }
+
+    /**
+     * @notice Converts token amount to USD value using Chainlink price feeds
+     * @dev Fetches real-time price from Chainlink oracle and calculates USD value with proper decimal handling.
+     * Uses price precision constants to convert Chainlink's 8-decimal prices to 18-decimal precision.
+     * @param token The address of the token to get price for
+     * @param amount The amount of tokens to convert (in wei/smallest unit)
+     * @return The USD value with 18 decimal precision
+     * 
+     * Process:
+     * 1. Get Chainlink price feed contract for the token from s_priceFeeds mapping
+     * 2. Call latestRoundData() to get current price (returns int256 with 8 decimals)
+     * 3. Apply formula: (price * ADDITIONNAL_FEED_PRECISION * amount) / PRECISION
+     * 
+     * Precision handling:
+     * - ADDITIONNAL_FEED_PRECISION (1e10): Converts Chainlink's 8 decimals to 18 decimals
+     * - PRECISION (1e18): Maintains 18-decimal precision in final result
+     * 
+     * Example: getUsdValue(ETH_address, 2e18) with ETH price $3000 → returns $6000 in 18-decimal format
+     */
+    function getUsdValue(
+        address token,
+        uint256 amount
+    ) public view returns (uint256) {
+        // get the price feed address for the token
+        AggregatorV3Interface priceFeed = AggregatorV3Interface(
+            s_priceFeeds[token]
+        );
+
+        // returns the actual price
+        (, int256 price, , , ) = priceFeed.latestRoundData();
+
+        // convert price to uint256
+        return
+            (uint256(price) * ADDITIONNAL_FEED_PRECISION * amount) / PRECISION;
     }
 }
