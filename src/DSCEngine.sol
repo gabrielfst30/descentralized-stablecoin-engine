@@ -26,10 +26,10 @@
 pragma solidity ^0.8.20;
 
 import {DecentralizedStableCoin} from "./DecentralizedStableCoin.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 // interface for ERC20 tokens to make interactions
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 
 /**
  * @title Decentralized Stable Coin
@@ -57,13 +57,17 @@ contract DSCEngine is ReentrancyGuard {
     error DSCEngine__TokenAddressesAndPriceFeedAddressesMustBeSameLength();
     error DSCEngine__NotAllowedToken();
     error DSCEngine__TransferFailed();
+    error DSCEngine__BreaksHealthFactor(uint256 healthFactor);
+    error DSCEngine__MintFailed();
 
     ////////////////////////
     // State Variables    //
     ////////////////////////
-    uint265 private constant ADDITIONNAL_FEED_PRECISION = 1e10; // to bring price feed to 18 decimals
-    uint265 private constant PRECISION = 1e18;
-
+    uint256 private constant ADDITIONNAL_FEED_PRECISION = 1e10; // to bring price feed to 18 decimals
+    uint256 private constant PRECISION = 1e18;
+    uint256 private constant LIQUIDATION_THRESHOLD = 50; // 50% collateralization ratio / 200% overcollateralized
+    uint256 private constant LIQUIDATION_PRECISION = 100; // precision for liquidation threshold
+    uint256 private constant MIN_HEALTH_FACTOR = 1;
     // array of collateral token addresses
     mapping(address token => address priceFeed) private s_priceFeeds; // token address -> price feed address
     mapping(address user => mapping(address token => uint256 amount))
@@ -190,15 +194,43 @@ contract DSCEngine is ReentrancyGuard {
     function redeemCollateral() external {}
 
     /**
+     * @notice Mints DSC tokens to the caller if they maintain sufficient collateralization
+     * @dev Creates new DSC tokens and assigns them to msg.sender. Requires 200% overcollateralization.
+     * The function updates the user's minted DSC balance, validates their health factor, 
+     * then calls the DSC contract to mint tokens. Reverts if health factor drops below minimum threshold.
      * @param amountDscToMint The amount of DSC tokens to mint (in wei, 18 decimals)
-     * @notice they must have more collateral value than the minimum threshold
-     **/
-
+     * 
+     * Requirements:
+     * - amountDscToMint must be greater than zero
+     * - User must have deposited sufficient collateral (minimum 200% of DSC value)
+     * - Health factor must remain >= MIN_HEALTH_FACTOR (1.0) after minting
+     * - The mint operation on the DSC contract must succeed
+     * 
+     * Process:
+     * 1. Increments s_dscMinted[msg.sender] to track total DSC minted by user
+     * 2. Validates health factor: (collateral * 50%) / totalDscMinted >= 1.0
+     * 3. Calls i_dsc.mint() to create and transfer DSC tokens to user
+     * 4. Reverts if mint fails or health factor is broken
+     * 
+     * Example: User with $1000 collateral can mint up to $500 DSC (200% ratio)
+     * 
+     * @custom:security Protected by nonReentrant modifier to prevent reentrancy attacks
+     * @custom:reverts DSCEngine__NeedsMoreThanZero if amountDscToMint is 0
+     * @custom:reverts DSCEngine__BreaksHealthFactor if collateralization drops below 200%
+     * @custom:reverts DSCEngine__MintFailed if the DSC contract mint operation fails
+     */
     function mintDsc(
         uint256 amountDscToMint
     ) external moreThanZero(amountDscToMint) nonReentrant {
         s_dscMinted[msg.sender] += amountDscToMint; // track how much DSC the user has minted
-        revertIfHealthFactorIsBroken(msg.sender);
+        _revertIfHealthFactorIsBroken(msg.sender);
+
+        // mint DSC to the user
+        bool minted = i_dsc.mint(msg.sender, amountDscToMint);
+
+        if (!minted) {
+            revert DSCEngine__MintFailed();
+        }
     }
 
     // redeem collateral by burning DSC
@@ -233,20 +265,52 @@ contract DSCEngine is ReentrancyGuard {
 
     /**
      * @notice Calculates the health factor for a user to determine proximity to liquidation
-     * @dev Health factor = (collateralValueInUsd * LIQUIDATION_THRESHOLD) / totalDscMinted
+     * @dev Health factor formula: (collateralValueInUsd * LIQUIDATION_THRESHOLD * PRECISION) / (LIQUIDATION_PRECISION * totalDscMinted)
+     * 
+     * The health factor measures how well-collateralized a user's position is:
+     * - Health Factor >= 1.0: Position is safe (sufficiently collateralized)
+     * - Health Factor < 1.0: Position is undercollateralized and can be liquidated
+     * 
      * @param user The address of the user whose health factor is being calculated
-     * @return healthFactor The health factor with 18 decimal precision (< 1.0 = liquidatable)
-     **/
-
+     * @return The health factor with 18 decimal precision (1e18 = 1.0)
+     * 
+     * Collateralization Rules:
+     * - LIQUIDATION_THRESHOLD = 50 means users can mint maximum 50% of their collateral value
+     * - This enforces 200% overcollateralization (collateral / DSC = 2.0)
+     * - Example: $1000 collateral → max $500 DSC mintable → 200% collateralization
+     * 
+     * Health Factor Interpretation:
+     * - HF = 1.0 (1e18): At liquidation threshold, exactly 200% collateralization
+     * - HF = 1.5 (1.5e18): 50% above minimum, 300% collateralization (very safe)
+     * - HF = 0.8 (0.8e18): Below threshold, 160% collateralization (liquidatable)
+     * 
+     * Calculation Example:
+     * Given: $1000 collateral, $400 DSC minted
+     * 1. Adjusted collateral = $1000 * 50 / 100 = $500
+     * 2. Health Factor = ($500 * 1e18) / $400 = 1.25e18
+     * 3. Interpretation: 1.25 = 25% safety margin above minimum
+     * 4. Actual collateralization: $1000 / $400 = 250%
+     * 
+     * @custom:security Returns max uint256 if no DSC minted (division by zero protection needed)
+     */
     function _healthFactor(address user) private view returns (uint256) {
         // 1. get the total collateral value
         // 2. get the total DSC minted
+        (uint256 totalDscMinted, uint256 collateralValueInUsd) = _getAccountInformation(user);
         // 3. calculate the health factor and return it
+        uint256 collateralAdjustedForThreshold = (collateralValueInUsd * LIQUIDATION_THRESHOLD) / LIQUIDATION_PRECISION;
+        
+        // 4. return health factor
+        return (collateralAdjustedForThreshold * PRECISION) / totalDscMinted;
     }
 
+    // 1. Check the user's health factor (do they have enough collateral?)
+    // 2. Revert if they don't good factor
     function _revertIfHealthFactorIsBroken(address user) internal view {
-        // 1. Check the user's health factor (do they have enough collateral?)
-        // 2. Revert if they don't good factor
+       uint256 userHealthFactor = _healthFactor(user);
+         if (userHealthFactor < MIN_HEALTH_FACTOR) {
+          revert DSCEngine__BreaksHealthFactor(userHealthFactor);
+         }
     }
 
     /////////////////////////////////////////
