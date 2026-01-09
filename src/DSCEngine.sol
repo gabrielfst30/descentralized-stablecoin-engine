@@ -26,10 +26,14 @@
 pragma solidity ^0.8.20;
 
 import {DecentralizedStableCoin} from "./DecentralizedStableCoin.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {
+    ReentrancyGuard
+} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 // interface for ERC20 tokens to make interactions
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
+import {
+    AggregatorV3Interface
+} from "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 
 /**
  * @title Decentralized Stable Coin
@@ -150,8 +154,26 @@ contract DSCEngine is ReentrancyGuard {
     // External Functions //
     ////////////////////////
 
-    // deposit collateral and mint DSC
-    function depositCollateralAndMintDsc() external {}
+    /**
+     * @notice Allows users to deposit collateral and mint DSC tokens in a single transaction
+     * @dev Convenience function that combines depositCollateral and mintDsc operations sequentially
+     * @param tokenCollateralAddress The contract address of the ERC20 collateral token to deposit (ETH or BTC)
+     * @param amountCollateral The amount of collateral tokens to deposit (in wei)
+     * @param amountDscToMint The amount of DSC tokens to mint (in wei, 18 decimals)
+     *
+     * Requirements:
+     * - Both amounts must be greater than zero
+     * - Token must be an allowed collateral type
+     * - User must maintain 200% overcollateralization after minting
+     */
+    function depositCollateralAndMintDsc(
+        address tokenCollateralAddress, // collateral token address
+        uint256 amountCollateral, // amount of collateral to deposit
+        uint256 amountDscToMint // amount of DSC to mint
+    ) external {
+        depositCollateral(tokenCollateralAddress, amountCollateral);
+        mintDsc(amountDscToMint);
+    }
 
     /**
      * @notice Allows users to deposit collateral tokens into the system
@@ -163,7 +185,7 @@ contract DSCEngine is ReentrancyGuard {
         address tokenCollateralAddress,
         uint256 amountCollateral
     )
-        external
+        public
         moreThanZero(amountCollateral)
         isAllowedToken(tokenCollateralAddress)
         nonReentrant
@@ -196,24 +218,24 @@ contract DSCEngine is ReentrancyGuard {
     /**
      * @notice Mints DSC tokens to the caller if they maintain sufficient collateralization
      * @dev Creates new DSC tokens and assigns them to msg.sender. Requires 200% overcollateralization.
-     * The function updates the user's minted DSC balance, validates their health factor, 
+     * The function updates the user's minted DSC balance, validates their health factor,
      * then calls the DSC contract to mint tokens. Reverts if health factor drops below minimum threshold.
      * @param amountDscToMint The amount of DSC tokens to mint (in wei, 18 decimals)
-     * 
+     *
      * Requirements:
      * - amountDscToMint must be greater than zero
      * - User must have deposited sufficient collateral (minimum 200% of DSC value)
      * - Health factor must remain >= MIN_HEALTH_FACTOR (1.0) after minting
      * - The mint operation on the DSC contract must succeed
-     * 
+     *
      * Process:
      * 1. Increments s_dscMinted[msg.sender] to track total DSC minted by user
      * 2. Validates health factor: (collateral * 50%) / totalDscMinted >= 1.0
      * 3. Calls i_dsc.mint() to create and transfer DSC tokens to user
      * 4. Reverts if mint fails or health factor is broken
-     * 
+     *
      * Example: User with $1000 collateral can mint up to $500 DSC (200% ratio)
-     * 
+     *
      * @custom:security Protected by nonReentrant modifier to prevent reentrancy attacks
      * @custom:reverts DSCEngine__NeedsMoreThanZero if amountDscToMint is 0
      * @custom:reverts DSCEngine__BreaksHealthFactor if collateralization drops below 200%
@@ -221,7 +243,7 @@ contract DSCEngine is ReentrancyGuard {
      */
     function mintDsc(
         uint256 amountDscToMint
-    ) external moreThanZero(amountDscToMint) nonReentrant {
+    ) public moreThanZero(amountDscToMint) nonReentrant {
         s_dscMinted[msg.sender] += amountDscToMint; // track how much DSC the user has minted
         _revertIfHealthFactorIsBroken(msg.sender);
 
@@ -266,40 +288,44 @@ contract DSCEngine is ReentrancyGuard {
     /**
      * @notice Calculates the health factor for a user to determine proximity to liquidation
      * @dev Health factor formula: (collateralValueInUsd * LIQUIDATION_THRESHOLD * PRECISION) / (LIQUIDATION_PRECISION * totalDscMinted)
-     * 
+     *
      * The health factor measures how well-collateralized a user's position is:
      * - Health Factor >= 1.0: Position is safe (sufficiently collateralized)
      * - Health Factor < 1.0: Position is undercollateralized and can be liquidated
-     * 
+     *
      * @param user The address of the user whose health factor is being calculated
      * @return The health factor with 18 decimal precision (1e18 = 1.0)
-     * 
+     *
      * Collateralization Rules:
      * - LIQUIDATION_THRESHOLD = 50 means users can mint maximum 50% of their collateral value
      * - This enforces 200% overcollateralization (collateral / DSC = 2.0)
      * - Example: $1000 collateral → max $500 DSC mintable → 200% collateralization
-     * 
+     *
      * Health Factor Interpretation:
      * - HF = 1.0 (1e18): At liquidation threshold, exactly 200% collateralization
      * - HF = 1.5 (1.5e18): 50% above minimum, 300% collateralization (very safe)
      * - HF = 0.8 (0.8e18): Below threshold, 160% collateralization (liquidatable)
-     * 
+     *
      * Calculation Example:
      * Given: $1000 collateral, $400 DSC minted
      * 1. Adjusted collateral = $1000 * 50 / 100 = $500
      * 2. Health Factor = ($500 * 1e18) / $400 = 1.25e18
      * 3. Interpretation: 1.25 = 25% safety margin above minimum
      * 4. Actual collateralization: $1000 / $400 = 250%
-     * 
+     *
      * @custom:security Returns max uint256 if no DSC minted (division by zero protection needed)
      */
     function _healthFactor(address user) private view returns (uint256) {
         // 1. get the total collateral value
         // 2. get the total DSC minted
-        (uint256 totalDscMinted, uint256 collateralValueInUsd) = _getAccountInformation(user);
+        (
+            uint256 totalDscMinted,
+            uint256 collateralValueInUsd
+        ) = _getAccountInformation(user);
         // 3. calculate the health factor and return it
-        uint256 collateralAdjustedForThreshold = (collateralValueInUsd * LIQUIDATION_THRESHOLD) / LIQUIDATION_PRECISION;
-        
+        uint256 collateralAdjustedForThreshold = (collateralValueInUsd *
+            LIQUIDATION_THRESHOLD) / LIQUIDATION_PRECISION;
+
         // 4. return health factor
         return (collateralAdjustedForThreshold * PRECISION) / totalDscMinted;
     }
@@ -307,10 +333,10 @@ contract DSCEngine is ReentrancyGuard {
     // 1. Check the user's health factor (do they have enough collateral?)
     // 2. Revert if they don't good factor
     function _revertIfHealthFactorIsBroken(address user) internal view {
-       uint256 userHealthFactor = _healthFactor(user);
-         if (userHealthFactor < MIN_HEALTH_FACTOR) {
-          revert DSCEngine__BreaksHealthFactor(userHealthFactor);
-         }
+        uint256 userHealthFactor = _healthFactor(user);
+        if (userHealthFactor < MIN_HEALTH_FACTOR) {
+            revert DSCEngine__BreaksHealthFactor(userHealthFactor);
+        }
     }
 
     /////////////////////////////////////////
@@ -323,13 +349,13 @@ contract DSCEngine is ReentrancyGuard {
      * For each token: gets user's deposited amount → converts to USD via getUsdValue() → accumulates total
      * @param user The address of the user to check collateral value for
      * @return totalCollateralValueInUsd The total value of user's collateral in USD (18 decimals)
-     * 
+     *
      * Process:
      * 1. Loop through s_collateralTokens array (all accepted collateral types)
      * 2. For each token: query s_collateralDeposited[user][token] to get deposited amount
      * 3. Call getUsdValue(token, amount) to convert token amount to USD using Chainlink prices
      * 4. Sum all USD values to get total collateral value
-     * 
+     *
      * Example: User deposited 2 ETH + 0.1 BTC → returns total USD value (e.g., $6000 + $4000 = $10000)
      */
     function getAccountCollateralValue(
@@ -353,16 +379,16 @@ contract DSCEngine is ReentrancyGuard {
      * @param token The address of the token to get price for
      * @param amount The amount of tokens to convert (in wei/smallest unit)
      * @return The USD value with 18 decimal precision
-     * 
+     *
      * Process:
      * 1. Get Chainlink price feed contract for the token from s_priceFeeds mapping
      * 2. Call latestRoundData() to get current price (returns int256 with 8 decimals)
      * 3. Apply formula: (price * ADDITIONNAL_FEED_PRECISION * amount) / PRECISION
-     * 
+     *
      * Precision handling:
      * - ADDITIONNAL_FEED_PRECISION (1e10): Converts Chainlink's 8 decimals to 18 decimals
      * - PRECISION (1e18): Maintains 18-decimal precision in final result
-     * 
+     *
      * Example: getUsdValue(ETH_address, 2e18) with ETH price $3000 → returns $6000 in 18-decimal format
      */
     function getUsdValue(
