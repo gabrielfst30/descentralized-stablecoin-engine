@@ -37,13 +37,13 @@ Se o healthFactor ficar abaixo do limite mínimo → a conta pode ser liquidada.
 
 # Exemplo:
 
-Limite de colateralização: 150%
+Limite de colateralização: 200%
 
-Colateral: US$ 75 em ETH
+Colateral: US$ 100 em ETH
 
 DSC possível: US$ 50
 
-Se o ETH cair para US$ 74, o healthFactor quebra o limite e a conta se torna liquidável.
+Se o ETH cair para US$ 99, o healthFactor quebra o limite e a conta se torna liquidável.
 
 # Resumo Geral
 
