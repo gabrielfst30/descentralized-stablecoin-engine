@@ -358,8 +358,48 @@ contract DSCEngine is ReentrancyGuard {
         _revertIfHealthFactorIsBroken(msg.sender); // i don't think this is necessary but just in case
     }
 
-    // liquidate undercollateralized users
-    function liquidate() external {}
+    /**
+     * @notice Liquidates an undercollateralized user's position by paying off their debt and claiming their collateral
+     * @dev Allows anyone to liquidate a user whose health factor has fallen below MIN_HEALTH_FACTOR (1.0).
+     * The liquidator pays/burns DSC debt on behalf of the insolvent user and receives their collateral at a discount as incentive.
+     * 
+     * @param collateral The ERC20 collateral token address to seize from the undercollateralized user
+     * @param user The address of the user whose position is being liquidated (health factor < 1.0)
+     * @param debtToCover The amount of DSC debt to pay off (in wei, 18 decimals)
+     * 
+     * Liquidation Mechanism:
+     * - Only users with health factor < 1.0 can be liquidated
+     * - Liquidator burns DSC tokens to cover the user's debt
+     * - Liquidator receives collateral worth more than the debt paid (liquidation bonus)
+     * - User's health factor must improve above MIN_HEALTH_FACTOR after liquidation
+     * 
+     * Economic Incentive:
+     * - Liquidators profit from the collateral discount/bonus
+     * - This incentivizes rapid correction of risky positions
+     * - Maintains protocol solvency by preventing undercollateralized positions
+     * 
+     * Example Scenario:
+     * - Insolvent user has $100 ETH collateral backing $50 DSC debt
+     * - ETH price drops, collateral now worth $75 (health factor < 1.0, liquidatable!)
+     * - Liquidator burns their own $50 DSC tokens (covering the insolvent user's debt)
+     * - The $50 DSC debt is eliminated from the insolvent user's account
+     * - Liquidator receives $75 worth of ETH collateral as reward
+     * - Net profit for liquidator: $25 ($75 received - $50 burned)
+     * - Protocol remains healthy and solvent
+     * 
+     * Requirements:
+     * - Target user's health factor must be < MIN_HEALTH_FACTOR
+     * - Liquidator must have sufficient DSC tokens to cover debt
+     * - Liquidator must approve DSCEngine to spend their DSC
+     * - User must have collateral deposited in the specified token
+     * - Liquidation must improve user's health factor
+     * 
+     * @custom:security This function is critical for protocol solvency
+     * @custom:reverts If user's health factor is already >= 1.0 (not liquidatable)
+     * @custom:reverts If liquidation doesn't improve user's health factor
+     * @custom:reverts If debtToCover is 0 or exceeds user's minted DSC
+     */
+    function liquidate(address collateral, address user, uint256 debtToCover) external {}
 
     function getHealthFactor() external view {}
 
