@@ -63,6 +63,7 @@ contract DSCEngine is ReentrancyGuard {
     error DSCEngine__TransferFailed();
     error DSCEngine__BreaksHealthFactor(uint256 healthFactor);
     error DSCEngine__MintFailed();
+    error DSCEngine__HealthFactorOk();
 
     ////////////////////////
     // State Variables    //
@@ -71,7 +72,9 @@ contract DSCEngine is ReentrancyGuard {
     uint256 private constant PRECISION = 1e18;
     uint256 private constant LIQUIDATION_THRESHOLD = 50; // 50% collateralization ratio / 200% overcollateralized
     uint256 private constant LIQUIDATION_PRECISION = 100; // precision for liquidation threshold
-    uint256 private constant MIN_HEALTH_FACTOR = 1;
+    uint256 private constant MIN_HEALTH_FACTOR = 1e18; // 1.0 with 18 decimals of precision
+    uint216 private constant LIQUIDATION_BONUS = 10; // 10% bonus for liquidators
+
     // array of collateral token addresses
     mapping(address token => address priceFeed) private s_priceFeeds; // token address -> price feed address
     mapping(address user => mapping(address token => uint256 amount))
@@ -325,7 +328,6 @@ contract DSCEngine is ReentrancyGuard {
         uint256 amountCollateral,
         uint256 amountDscToBurn
     ) external {
-
         burnDsc(amountDscToBurn);
         redeemCollateral(tokenCollateralAddress, amountCollateral);
         // redeem collateral already checks health factor
@@ -359,47 +361,62 @@ contract DSCEngine is ReentrancyGuard {
     }
 
     /**
-     * @notice Liquidates an undercollateralized user's position by paying off their debt and claiming their collateral
-     * @dev Allows anyone to liquidate a user whose health factor has fallen below MIN_HEALTH_FACTOR (1.0).
-     * The liquidator pays/burns DSC debt on behalf of the insolvent user and receives their collateral at a discount as incentive.
+     * @notice Liquida a posição de um usuário subcapitalizado, queimando sua dívida DSC e confiscando colateral
+     * @dev Permite que qualquer um liquide usuários com health factor < 1.0. Liquidador recebe bônus de 10% como incentivo.
+     *
+     * @param collateralAddress Endereço do token de colateral a ser confiscado (ETH ou BTC)
+     * @param user Endereço do usuário subcapitalizado (health factor < 1.0)
+     * @param debtToCover Quantidade de dívida DSC a pagar (em wei, 18 decimais)
+     *
+     * Cálculos da Liquidação:
+     * 1. Converte dívida DSC em quantidade de colateral:
+     *    tokenAmount = getTokenAmountFromUsd(collateralAddress, debtToCover)
+     *    Exemplo: $100 DSC → 0.05 ETH (se ETH = $2000)
      * 
-     * @param collateral The ERC20 collateral token address to seize from the undercollateralized user
-     * @param user The address of the user whose position is being liquidated (health factor < 1.0)
-     * @param debtToCover The amount of DSC debt to pay off (in wei, 18 decimals)
+     * 2. Calcula bônus de 10% para o liquidador:
+     *    bonus = (tokenAmount * 10) / 100
+     *    Exemplo: (0.05 ETH * 10) / 100 = 0.005 ETH
      * 
-     * Liquidation Mechanism:
-     * - Only users with health factor < 1.0 can be liquidated
-     * - Liquidator burns DSC tokens to cover the user's debt
-     * - Liquidator receives collateral worth more than the debt paid (liquidation bonus)
-     * - User's health factor must improve above MIN_HEALTH_FACTOR after liquidation
+     * 3. Total de colateral a receber:
+     *    total = tokenAmount + bonus
+     *    Exemplo: 0.05 + 0.005 = 0.055 ETH (vale $110)
      * 
-     * Economic Incentive:
-     * - Liquidators profit from the collateral discount/bonus
-     * - This incentivizes rapid correction of risky positions
-     * - Maintains protocol solvency by preventing undercollateralized positions
-     * 
-     * Example Scenario:
-     * - Insolvent user has $100 ETH collateral backing $50 DSC debt
-     * - ETH price drops, collateral now worth $75 (health factor < 1.0, liquidatable!)
-     * - Liquidator burns their own $50 DSC tokens (covering the insolvent user's debt)
-     * - The $50 DSC debt is eliminated from the insolvent user's account
-     * - Liquidator receives $75 worth of ETH collateral as reward
-     * - Net profit for liquidator: $25 ($75 received - $50 burned)
-     * - Protocol remains healthy and solvent
-     * 
-     * Requirements:
-     * - Target user's health factor must be < MIN_HEALTH_FACTOR
-     * - Liquidator must have sufficient DSC tokens to cover debt
-     * - Liquidator must approve DSCEngine to spend their DSC
-     * - User must have collateral deposited in the specified token
-     * - Liquidation must improve user's health factor
-     * 
-     * @custom:security This function is critical for protocol solvency
-     * @custom:reverts If user's health factor is already >= 1.0 (not liquidatable)
-     * @custom:reverts If liquidation doesn't improve user's health factor
-     * @custom:reverts If debtToCover is 0 or exceeds user's minted DSC
+     * Resultado: Liquidador paga $100 DSC e recebe $110 em colateral (lucro de $10)
+     *
+     * @custom:example User tem $140 ETH e $100 DSC mintado. Preço cai, HF < 1.0. Liquidador cobre $100 DSC e recebe $110 em ETH.
+     * @custom:reverts DSCEngine__HealthFactorOk se health factor >= 1.0 (usuário não é liquidável)
+     * @custom:security Protegido por nonReentrant. Segue padrão CEI (Checks-Effects-Interactions)
      */
-    function liquidate(address collateral, address user, uint256 debtToCover) external {}
+    function liquidate(
+        address collateralAddress,
+        address user,
+        uint256 debtToCover
+    ) external moreThanZero(debtToCover) nonReentrant {
+        // Verifica o health factor do usuário antes da liquidação
+        uint256 startingUserHealthFactor = _healthFactor(user);
+
+        // 1. Verifica se o usuário pode ser liquidado (HF < 1.0)
+        if (startingUserHealthFactor >= MIN_HEALTH_FACTOR) {
+            revert DSCEngine__HealthFactorOk(startingUserHealthFactor);
+        }
+
+        // 2. Calcula quanto colateral o liquidador receberá
+        // Converte o valor da dívida DSC para quantidade de tokens de colateral
+        // Exemplo: $100 DSC → 0.05 ETH (se ETH = $2000)
+        uint256 tokenAmountFromDebtCovered = getTokenAmountFromUsd(
+            collateral,
+            debtToCover
+        );
+        
+        // 3. Adiciona bônus de 10% como incentivo para o liquidador
+        // Cálculo: (quantidade * 10) / 100
+        // Exemplo: (0.05 ETH * 10) / 100 = 0.005 ETH
+        uint256 bonusCollateral = (tokenAmountFromDebtCovered * LIQUIDATION_BONUS) / LIQUIDATION_PRECISION;
+        
+        // 4. Calcula o total de colateral a ser resgatado (dívida + bônus)
+        // Exemplo: 0.05 ETH + 0.005 ETH = 0.055 ETH
+        uint256 totalCollateralToRedeem = tokenAmountFromDebtCovered + bonusCollateral;
+    }
 
     function getHealthFactor() external view {}
 
@@ -479,6 +496,38 @@ contract DSCEngine is ReentrancyGuard {
     /////////////////////////////////////////
     // Public and External View Functions ///
     /////////////////////////////////////////
+
+    /**
+     * @notice Converte um valor em USD para a quantidade equivalente de tokens de colateral
+     * @dev Usa Chainlink price feeds para obter o preço atual do token e calcula a quantidade necessária
+     * 
+     * Cálculo: quantidade_token = (valor_USD * 1e18) / (preço_token * 1e10)
+     * 
+     * Exemplo prático:
+     * - Valor USD desejado = $1000 (passa como 1000e18)
+     * - Preço ETH = $2000 (retorna como 2000e8 do Chainlink)
+     * - Cálculo: (1000e18 * 1e18) / (2000e8 * 1e10) = 0.5e18 = 0.5 ETH
+     * 
+     * @param token Endereço do token de colateral (ETH ou BTC)
+     * @param usdAmountInWei Valor em USD com 18 decimais (ex: 1000e18 = $1000)
+     * @return Quantidade de tokens equivalente ao valor USD (com 18 decimais)
+     * 
+     * @custom:precision Chainlink retorna preços com 8 decimais, multiplicamos por 1e10 para chegar a 18 decimais
+     */
+    function getTokenAmountFromUsd(
+        address token,
+        uint256 usdAmountInWei
+    ) public view returns (uint256) {
+        // Obtém o price feed do Chainlink para o token
+        AggregatorV3Interface priceFeed = AggregatorV3Interface(
+            s_priceFeeds[token]
+        );
+        // Busca o preço atual (retorna com 8 decimais)
+        (, int256 price, , , ) = priceFeed.latestRoundData();
+        // Fórmula: (USD_valor * 1e18) / (preço * 1e10)
+        // Exemplo: ($1000 * 1e18) / ($2000e8 * 1e10) = 0.5 ETH
+        return (usdAmountInWei * PRECISION) / (uint256(price) * ADDITIONNAL_FEED_PRECISION);
+    }
 
     /**
      * @notice Calculates the total USD value of all collateral deposited by a user
