@@ -64,6 +64,7 @@ contract DSCEngine is ReentrancyGuard {
     error DSCEngine__BreaksHealthFactor(uint256 healthFactor);
     error DSCEngine__MintFailed();
     error DSCEngine__HealthFactorOk();
+    error DSCEngine__HealthFactorNotImproved();
 
     ////////////////////////
     // State Variables    //
@@ -75,7 +76,7 @@ contract DSCEngine is ReentrancyGuard {
     uint256 private constant MIN_HEALTH_FACTOR = 1e18; // 1.0 with 18 decimals of precision
     uint216 private constant LIQUIDATION_BONUS = 10; // 10% bonus for liquidators
 
-    // array of collateral token addresses
+    // mappinngs of collateral token addresses
     mapping(address token => address priceFeed) private s_priceFeeds; // token address -> price feed address
     mapping(address user => mapping(address token => uint256 amount))
         private s_collateralDeposited; // user -> token -> amount deposited
@@ -93,9 +94,10 @@ contract DSCEngine is ReentrancyGuard {
         uint256 indexed amount
     );
     event CollateralRedeemed(
-        address indexed user,
+        address indexed redeemedFrom,
+        address indexed redeemedTo,
         address indexed token,
-        uint256 indexed amount
+        uint256 amount
     );
 
     ////////////////
@@ -120,23 +122,12 @@ contract DSCEngine is ReentrancyGuard {
     //////////////////
 
     /**
-     * @notice Initializes the DSC Engine with collateral tokens, price feeds, and the DSC token contract
-     * @dev Sets up the mapping between collateral tokens and their corresponding Chainlink price feeds
-     * @param tokenAddresses Array of ERC20 collateral token contract addresses (e.g., WETH, WBTC)
-     * @param priceFeedAddresses Array of Chainlink price feed contract addresses for USD pricing (e.g., ETH/USD, BTC/USD)
-     * @param dscAddress The contract address of the DecentralizedStableCoin token
-     *
-     * Validations performed:
-     * - Ensures tokenAddresses and priceFeedAddresses arrays have the same length
-     * - Each token address is mapped to its corresponding price feed address
-     *
-     * Initializations performed:
-     * - Maps each collateral token to its USD price feed in s_priceFeeds mapping
-     * - Sets the immutable DSC token contract reference (i_dsc)
-     * - Establishes the foundation for collateral valuation and DSC minting/burning
-     *
-     * @custom:security The constructor validates array lengths to prevent misconfiguration
-     * @custom:note Price feeds should be Chainlink AggregatorV3Interface compatible contracts
+     * @notice Inicializa tokens de colateral, price feeds e o DSC.
+     * @dev Mapeia `tokenAddresses` para `priceFeedAddresses` e define `i_dsc`.
+     * @param tokenAddresses Tokens aceitos como colateral.
+     * @param priceFeedAddresses Feeds Chainlink USD correspondentes.
+     * @param dscAddress Endereço do contrato DSC.
+     * @custom:reverts DSCEngine__TokenAddressesAndPriceFeedAddressesMustBeSameLength se tamanhos divergem.
      */
     constructor(
         address[] memory tokenAddresses,
@@ -163,16 +154,11 @@ contract DSCEngine is ReentrancyGuard {
     ////////////////////////
 
     /**
-     * @notice Allows users to deposit collateral and mint DSC tokens in a single transaction
-     * @dev Convenience function that combines depositCollateral and mintDsc operations sequentially
-     * @param tokenCollateralAddress The contract address of the ERC20 collateral token to deposit (ETH or BTC)
-     * @param amountCollateral The amount of collateral tokens to deposit (in wei)
-     * @param amountDscToMint The amount of DSC tokens to mint (in wei, 18 decimals)
-     *
-     * Requirements:
-     * - Both amounts must be greater than zero
-     * - Token must be an allowed collateral type
-     * - User must maintain 200% overcollateralization after minting
+     * @notice Deposita colateral e mina DSC na mesma transação.
+     * @dev Chama `depositCollateral` e `mintDsc` em sequência.
+     * @param tokenCollateralAddress Endereço do token de colateral.
+     * @param amountCollateral Quantidade de colateral.
+     * @param amountDscToMint Quantidade de DSC.
      */
     function depositCollateralAndMintDsc(
         address tokenCollateralAddress, // collateral token address
@@ -184,10 +170,11 @@ contract DSCEngine is ReentrancyGuard {
     }
 
     /**
-     * @notice Allows users to deposit collateral tokens into the system
-     * @dev This function only deposits collateral without minting DSC tokens
-     * @param tokenCollateralAddress The contract address of the ERC20 collateral token to deposit (ETH or BTC)
-     * @param amountCollateral The amount of collateral tokens to deposit (in wei for ETH or satoshis for BTC)
+     * @notice Deposita token de colateral no protocolo.
+     * @dev Atualiza saldo e transfere tokens para o contrato.
+     * @param tokenCollateralAddress Endereço do token aceito.
+     * @param amountCollateral Quantidade a depositar.
+     * @custom:reverts DSCEngine__NeedsMoreThanZero, DSCEngine__NotAllowedToken, DSCEngine__TransferFailed.
      */
     function depositCollateral(
         address tokenCollateralAddress,
@@ -222,82 +209,31 @@ contract DSCEngine is ReentrancyGuard {
     }
 
     /**
-     * @notice Allows users to withdraw their deposited collateral from the system
-     * @dev Removes collateral from user's balance and transfers tokens back. Health factor must remain >= 1.0 after withdrawal.
-     * @param tokenCollateralAddress The contract address of the ERC20 collateral token to redeem (ETH or BTC)
-     * @param amountCollateral The amount of collateral tokens to withdraw (in wei)
-     *
-     * Requirements:
-     * - amountCollateral must be greater than zero
-     * - User must have sufficient collateral deposited
-     * - Health factor must remain >= MIN_HEALTH_FACTOR (1.0) after withdrawal
-     * - Transfer operation must succeed
-     *
-     * Process:
-     * 1. Decrements s_collateralDeposited[msg.sender][token] to update user's collateral balance
-     * 2. Emits CollateralRedeemed event for tracking
-     * 3. Transfers collateral tokens from contract back to user via IERC20.transfer()
-     * 4. Validates health factor remains above minimum threshold post-withdrawal
-     *
-     * @custom:security Protected by nonReentrant modifier to prevent reentrancy attacks
-     * @custom:reverts DSCEngine__NeedsMoreThanZero if amountCollateral is 0
-     * @custom:reverts DSCEngine__TransferFailed if token transfer fails
-     * @custom:reverts DSCEngine__BreaksHealthFactor if withdrawal causes undercollateralization
+     * @notice Resgata parte do colateral depositado.
+     * @dev Atualiza saldo, transfere ao usuário e checa health factor.
+     * @param tokenCollateralAddress Token de colateral.
+     * @param amountCollateral Quantidade a resgatar.
+     * @custom:reverts DSCEngine__NeedsMoreThanZero, DSCEngine__TransferFailed, DSCEngine__BreaksHealthFactor.
      */
     function redeemCollateral(
         address tokenCollateralAddress,
         uint256 amountCollateral
     ) public moreThanZero(amountCollateral) nonReentrant {
-        // 1. Update user's collateral balance
-        s_collateralDeposited[msg.sender][
-            tokenCollateralAddress
-        ] -= amountCollateral;
-
-        // 2. Emit event for successful redemption
-        emit CollateralRedeemed(
-            msg.sender,
+        
+        _redeemCollateral(
             tokenCollateralAddress,
-            amountCollateral
-        );
-
-        // 3. Transfer collateral tokens back to user
-        bool success = IERC20(tokenCollateralAddress).transfer(
+            amountCollateral,
             msg.sender,
-            amountCollateral
+            msg.sender
         );
-        if (!success) {
-            revert DSCEngine__TransferFailed();
-        }
-
-        // 4. Verify health factor remains safe after withdrawal
         _revertIfHealthFactorIsBroken(msg.sender);
     }
 
     /**
-     * @notice Mints DSC tokens to the caller if they maintain sufficient collateralization
-     * @dev Creates new DSC tokens and assigns them to msg.sender. Requires 200% overcollateralization.
-     * The function updates the user's minted DSC balance, validates their health factor,
-     * then calls the DSC contract to mint tokens. Reverts if health factor drops below minimum threshold.
-     * @param amountDscToMint The amount of DSC tokens to mint (in wei, 18 decimals)
-     *
-     * Requirements:
-     * - amountDscToMint must be greater than zero
-     * - User must have deposited sufficient collateral (minimum 200% of DSC value)
-     * - Health factor must remain >= MIN_HEALTH_FACTOR (1.0) after minting
-     * - The mint operation on the DSC contract must succeed
-     *
-     * Process:
-     * 1. Increments s_dscMinted[msg.sender] to track total DSC minted by user
-     * 2. Validates health factor: (collateral * 50%) / totalDscMinted >= 1.0
-     * 3. Calls i_dsc.mint() to create and transfer DSC tokens to user
-     * 4. Reverts if mint fails or health factor is broken
-     *
-     * Example: User with $1000 collateral can mint up to $500 DSC (200% ratio)
-     *
-     * @custom:security Protected by nonReentrant modifier to prevent reentrancy attacks
-     * @custom:reverts DSCEngine__NeedsMoreThanZero if amountDscToMint is 0
-     * @custom:reverts DSCEngine__BreaksHealthFactor if collateralization drops below 200%
-     * @custom:reverts DSCEngine__MintFailed if the DSC contract mint operation fails
+     * @notice Mina DSC para o chamador.
+     * @dev Incrementa dívida, valida health factor e chama `i_dsc.mint`.
+     * @param amountDscToMint Quantidade de DSC.
+     * @custom:reverts DSCEngine__NeedsMoreThanZero, DSCEngine__BreaksHealthFactor, DSCEngine__MintFailed.
      */
     function mintDsc(
         uint256 amountDscToMint
@@ -314,14 +250,11 @@ contract DSCEngine is ReentrancyGuard {
     }
 
     /**
-     * @notice Burns DSC and redeems collateral in a single transaction
-     * @dev Convenience function that burns DSC first to improve health factor, then redeems collateral.
-     * The order is important: burning DSC reduces debt before withdrawing collateral.
-     * @param tokenCollateralAddress The ERC20 collateral token address to redeem
-     * @param amountCollateral The amount of collateral to withdraw
-     * @param amountDscToBurn The amount of DSC tokens to burn
-     *
-     * @custom:security Health factor is checked in redeemCollateral after both operations complete
+     * @notice Queima DSC e resgata colateral em uma única chamada.
+     * @dev Primeiro queima DSC, depois resgata colateral.
+     * @param tokenCollateralAddress Token de colateral.
+     * @param amountCollateral Quantidade de colateral.
+     * @param amountDscToBurn Quantidade de DSC a queimar.
      */
     function redeemCollateralForDsc(
         address tokenCollateralAddress,
@@ -334,58 +267,23 @@ contract DSCEngine is ReentrancyGuard {
     }
 
     /**
-     * @notice Burns DSC tokens to reduce user's debt
-     * @dev Transfers DSC from user to contract then destroys them. Improves health factor by reducing debt.
-     * @param amount The amount of DSC tokens to burn
-     *
-     * Requirements:
-     * - User must have at least `amount` DSC minted
-     * - User must approve DSCEngine to spend their DSC tokens
-     *
-     * @custom:note Health factor check is redundant here since burning DSC always improves collateralization
+     * @notice Queima DSC do chamador para reduzir dívida.
+     * @dev Transfere DSC ao contrato e chama `burn`.
+     * @param amount Quantidade de DSC.
+     * @custom:reverts DSCEngine__NeedsMoreThanZero, DSCEngine__TransferFailed.
      */
     function burnDsc(uint256 amount) public moreThanZero(amount) nonReentrant {
-        // reduce the minted DSC amount
-        s_dscMinted[msg.sender] -= amount;
-
-        // transfer DSC from user to DSCEngine contract
-        bool success = i_dsc.transferFrom(msg.sender, address(this), amount);
-
-        // check if transfer was successful
-        if (!success) {
-            revert DSCEngine__TransferFailed();
-        }
-
-        i_dsc.burn(amount); // burn the DSC tokens
+        _burnDsc(amount, msg.sender, msg.sender);
         _revertIfHealthFactorIsBroken(msg.sender); // i don't think this is necessary but just in case
     }
 
     /**
-     * @notice Liquida a posição de um usuário subcapitalizado, queimando sua dívida DSC e confiscando colateral
-     * @dev Permite que qualquer um liquide usuários com health factor < 1.0. Liquidador recebe bônus de 10% como incentivo.
-     *
-     * @param collateralAddress Endereço do token de colateral a ser confiscado (ETH ou BTC)
-     * @param user Endereço do usuário subcapitalizado (health factor < 1.0)
-     * @param debtToCover Quantidade de dívida DSC a pagar (em wei, 18 decimais)
-     *
-     * Cálculos da Liquidação:
-     * 1. Converte dívida DSC em quantidade de colateral:
-     *    tokenAmount = getTokenAmountFromUsd(collateralAddress, debtToCover)
-     *    Exemplo: $100 DSC → 0.05 ETH (se ETH = $2000)
-     * 
-     * 2. Calcula bônus de 10% para o liquidador:
-     *    bonus = (tokenAmount * 10) / 100
-     *    Exemplo: (0.05 ETH * 10) / 100 = 0.005 ETH
-     * 
-     * 3. Total de colateral a receber:
-     *    total = tokenAmount + bonus
-     *    Exemplo: 0.05 + 0.005 = 0.055 ETH (vale $110)
-     * 
-     * Resultado: Liquidador paga $100 DSC e recebe $110 em colateral (lucro de $10)
-     *
-     * @custom:example User tem $140 ETH e $100 DSC mintado. Preço cai, HF < 1.0. Liquidador cobre $100 DSC e recebe $110 em ETH.
-     * @custom:reverts DSCEngine__HealthFactorOk se health factor >= 1.0 (usuário não é liquidável)
-     * @custom:security Protegido por nonReentrant. Segue padrão CEI (Checks-Effects-Interactions)
+     * @notice Liquida usuário com health factor < 1.0.
+     * @dev Cobre `debtToCover`, confisca colateral + bônus e melhora HF.
+     * @param collateralAddress Token de colateral a receber.
+     * @param user Usuário a ser liquidado.
+     * @param debtToCover Quantidade de DSC a cobrir.
+     * @custom:reverts DSCEngine__HealthFactorOk, DSCEngine__TransferFailed, DSCEngine__HealthFactorNotImproved.
      */
     function liquidate(
         address collateralAddress,
@@ -397,25 +295,44 @@ contract DSCEngine is ReentrancyGuard {
 
         // 1. Verifica se o usuário pode ser liquidado (HF < 1.0)
         if (startingUserHealthFactor >= MIN_HEALTH_FACTOR) {
-            revert DSCEngine__HealthFactorOk(startingUserHealthFactor);
+            revert DSCEngine__HealthFactorOk();
         }
 
         // 2. Calcula quanto colateral o liquidador receberá
         // Converte o valor da dívida DSC para quantidade de tokens de colateral
         // Exemplo: $100 DSC → 0.05 ETH (se ETH = $2000)
         uint256 tokenAmountFromDebtCovered = getTokenAmountFromUsd(
-            collateral,
+            collateralAddress,
             debtToCover
         );
-        
+
         // 3. Adiciona bônus de 10% como incentivo para o liquidador
         // Cálculo: (quantidade * 10) / 100
         // Exemplo: (0.05 ETH * 10) / 100 = 0.005 ETH
-        uint256 bonusCollateral = (tokenAmountFromDebtCovered * LIQUIDATION_BONUS) / LIQUIDATION_PRECISION;
-        
+        uint256 bonusCollateral = (tokenAmountFromDebtCovered *
+            LIQUIDATION_BONUS) / LIQUIDATION_PRECISION;
+
         // 4. Calcula o total de colateral a ser resgatado (dívida + bônus)
         // Exemplo: 0.05 ETH + 0.005 ETH = 0.055 ETH
         uint256 totalCollateralToRedeem = tokenAmountFromDebtCovered + bonusCollateral;
+        _redeemCollateral(
+            collateralAddress,
+            totalCollateralToRedeem,
+            user,
+            msg.sender
+        );
+
+        // 5. Queima a dívida DSC do usuário liquidado
+        _burnDsc(debtToCover, user, msg.sender);
+
+        // 6. Verifica se o health factor do usuário melhorou após a liquidação
+        uint256 endingUserHealthFactor = _healthFactor(user);
+        if(endingUserHealthFactor <= startingUserHealthFactor){
+            revert DSCEngine__HealthFactorNotImproved();
+        }
+
+        // 7. Garantir que o liquidador não quebre seu próprio health factor
+        _revertIfHealthFactorIsBroken(msg.sender);
     }
 
     function getHealthFactor() external view {}
@@ -423,6 +340,84 @@ contract DSCEngine is ReentrancyGuard {
     /////////////////////////////////////////
     // Private and Internal View Functions //
     /////////////////////////////////////////
+
+    /**
+     * @notice Queima DSC em nome de outro usuário.
+     * @dev Decrementa dívida, transfere DSC ao contrato e chama `i_dsc.burn`.
+     * @param amountDscToBurn Quantidade de DSC a queimar.
+     * @param onBehalfOf Usuário cuja dívida será reduzida.
+     * @param dscFrom Endereço de onde os DSC serão transferidos.
+     * @dev Ninguém chama essa função antes de verificar o health factor.
+     * @custom:reverts DSCEngine__TransferFailed.
+     */
+    function _burnDsc(uint256 amountDscToBurn, address onBehalfOf, address dscFrom) private {
+           // reduce the minted DSC amount
+        s_dscMinted[onBehalfOf] -= amountDscToBurn;
+
+        // transfer DSC from user to DSCEngine contract
+        bool success = i_dsc.transferFrom(dscFrom, address(this), amountDscToBurn);
+
+        // check if transfer was successful
+        if (!success) {
+            revert DSCEngine__TransferFailed();
+        }
+
+        i_dsc.burn(amountDscToBurn); // burn the DSC tokens
+        _revertIfHealthFactorIsBroken(msg.sender); // i don't think this is necessary but just in case
+    }
+
+    /**
+     * @notice Função utilitária privada para resgatar colateral entre duas contas
+     * @dev Decrementa o saldo de colateral de `from`, emite `CollateralRedeemed`,
+     *      e transfere os tokens de colateral do contrato para `to` via `IERC20.transfer`.
+     *      Utilizada por `redeemCollateral` (retirada pelo próprio usuário) e `liquidate`.
+     * @param tokenCollateralAddress Endereço do token ERC20 de colateral
+     * @param amountCollateral Quantidade de colateral a resgatar (em wei)
+     * @param from Endereço do devedor/doador do colateral a ser reduzido
+     * @param to Endereço do recebedor do colateral transferido
+     *
+     * Requisitos:
+     * - `amountCollateral` Deve ser maior que zero no chamador externo (verificado fora)
+     * - `from` Deve ter saldo suficiente (subtração sob Solidity >=0.8 reverte em underflow)
+     * - Transferência `IERC20.transfer(to, amountCollateral)` deve suceder
+     *
+     * Efeitos e eventos:
+     * - Atualiza `s_collateralDeposited[from][tokenCollateralAddress]`
+     * - Emite `CollateralRedeemed(from, to, tokenCollateralAddress, amountCollateral)`
+     * - Move tokens do contrato para `to`
+     *
+     * Segurança:
+     * - Não marcado com `nonReentrant`; pressupõe que o chamador externo aplica o guard
+     * @custom:reverts DSCEngine__TransferFailed se a transferência do token falhar
+     */
+    function _redeemCollateral(
+        address tokenCollateralAddress,
+        uint256 amountCollateral,
+        address from,
+        address to
+    ) private {
+        // 1. Update user's collateral balance
+        s_collateralDeposited[from][
+            tokenCollateralAddress
+        ] -= amountCollateral;
+
+        // 2. Emit event for successful redemption
+        emit CollateralRedeemed(
+            from,
+            to,
+            tokenCollateralAddress,
+            amountCollateral
+        );
+
+        // 3. Transfer collateral tokens back to user
+        bool success = IERC20(tokenCollateralAddress).transfer(
+            to,
+            amountCollateral
+        );
+        if (!success) {
+            revert DSCEngine__TransferFailed();
+        }
+    }
 
     // return the account information for a user
     function _getAccountInformation(
@@ -440,34 +435,11 @@ contract DSCEngine is ReentrancyGuard {
     }
 
     /**
-     * @notice Calculates the health factor for a user to determine proximity to liquidation
-     * @dev Health factor formula: (collateralValueInUsd * LIQUIDATION_THRESHOLD * PRECISION) / (LIQUIDATION_PRECISION * totalDscMinted)
-     *
-     * The health factor measures how well-collateralized a user's position is:
-     * - Health Factor >= 1.0: Position is safe (sufficiently collateralized)
-     * - Health Factor < 1.0: Position is undercollateralized and can be liquidated
-     *
-     * @param user The address of the user whose health factor is being calculated
-     * @return The health factor with 18 decimal precision (1e18 = 1.0)
-     *
-     * Collateralization Rules:
-     * - LIQUIDATION_THRESHOLD = 50 means users can mint maximum 50% of their collateral value
-     * - This enforces 200% overcollateralization (collateral / DSC = 2.0)
-     * - Example: $1000 collateral → max $500 DSC mintable → 200% collateralization
-     *
-     * Health Factor Interpretation:
-     * - HF = 1.0 (1e18): At liquidation threshold, exactly 200% collateralization
-     * - HF = 1.5 (1.5e18): 50% above minimum, 300% collateralization (very safe)
-     * - HF = 0.8 (0.8e18): Below threshold, 160% collateralization (liquidatable)
-     *
-     * Calculation Example:
-     * Given: $1000 collateral, $400 DSC minted
-     * 1. Adjusted collateral = $1000 * 50 / 100 = $500
-     * 2. Health Factor = ($500 * 1e18) / $400 = 1.25e18
-     * 3. Interpretation: 1.25 = 25% safety margin above minimum
-     * 4. Actual collateralization: $1000 / $400 = 250%
-     *
-     * @custom:security Returns max uint256 if no DSC minted (division by zero protection needed)
+     * @notice Calcula o health factor (HF) do usuário.
+     * @dev HF = (colateral_USD * THRESHOLD / PRECISION) / dívida_DSC.
+     * @param user Usuário alvo.
+     * @return Health factor com 18 decimais.
+     * @custom:note Reverte se `totalDscMinted == 0` (divisão por zero).
      */
     function _healthFactor(address user) private view returns (uint256) {
         // 1. get the total collateral value
@@ -484,8 +456,12 @@ contract DSCEngine is ReentrancyGuard {
         return (collateralAdjustedForThreshold * PRECISION) / totalDscMinted;
     }
 
-    // 1. Check the user's health factor (do they have enough collateral?)
-    // 2. Revert if they don't good factor
+    /**
+     * @notice Reverte se HF do usuário estiver abaixo do mínimo.
+     * @dev Calcula `_healthFactor(user)` e compara com `MIN_HEALTH_FACTOR`.
+     * @param user Usuário alvo.
+     * @custom:reverts DSCEngine__BreaksHealthFactor.
+     */
     function _revertIfHealthFactorIsBroken(address user) internal view {
         uint256 userHealthFactor = _healthFactor(user);
         if (userHealthFactor < MIN_HEALTH_FACTOR) {
@@ -498,21 +474,11 @@ contract DSCEngine is ReentrancyGuard {
     /////////////////////////////////////////
 
     /**
-     * @notice Converte um valor em USD para a quantidade equivalente de tokens de colateral
-     * @dev Usa Chainlink price feeds para obter o preço atual do token e calcula a quantidade necessária
-     * 
-     * Cálculo: quantidade_token = (valor_USD * 1e18) / (preço_token * 1e10)
-     * 
-     * Exemplo prático:
-     * - Valor USD desejado = $1000 (passa como 1000e18)
-     * - Preço ETH = $2000 (retorna como 2000e8 do Chainlink)
-     * - Cálculo: (1000e18 * 1e18) / (2000e8 * 1e10) = 0.5e18 = 0.5 ETH
-     * 
-     * @param token Endereço do token de colateral (ETH ou BTC)
-     * @param usdAmountInWei Valor em USD com 18 decimais (ex: 1000e18 = $1000)
-     * @return Quantidade de tokens equivalente ao valor USD (com 18 decimais)
-     * 
-     * @custom:precision Chainlink retorna preços com 8 decimais, multiplicamos por 1e10 para chegar a 18 decimais
+     * @notice Converte USD (18d) em quantidade do token.
+     * @dev Usa preço Chainlink (8d) ajustado para 18d.
+     * @param token Token de colateral.
+     * @param usdAmountInWei Valor USD (18 decimais).
+     * @return Quantidade de tokens (18 decimais).
      */
     function getTokenAmountFromUsd(
         address token,
@@ -526,23 +492,16 @@ contract DSCEngine is ReentrancyGuard {
         (, int256 price, , , ) = priceFeed.latestRoundData();
         // Fórmula: (USD_valor * 1e18) / (preço * 1e10)
         // Exemplo: ($1000 * 1e18) / ($2000e8 * 1e10) = 0.5 ETH
-        return (usdAmountInWei * PRECISION) / (uint256(price) * ADDITIONNAL_FEED_PRECISION);
+        return
+            (usdAmountInWei * PRECISION) /
+            (uint256(price) * ADDITIONNAL_FEED_PRECISION);
     }
 
     /**
-     * @notice Calculates the total USD value of all collateral deposited by a user
-     * @dev Iterates through all accepted collateral tokens and sums their USD values.
-     * For each token: gets user's deposited amount → converts to USD via getUsdValue() → accumulates total
-     * @param user The address of the user to check collateral value for
-     * @return totalCollateralValueInUsd The total value of user's collateral in USD (18 decimals)
-     *
-     * Process:
-     * 1. Loop through s_collateralTokens array (all accepted collateral types)
-     * 2. For each token: query s_collateralDeposited[user][token] to get deposited amount
-     * 3. Call getUsdValue(token, amount) to convert token amount to USD using Chainlink prices
-     * 4. Sum all USD values to get total collateral value
-     *
-     * Example: User deposited 2 ETH + 0.1 BTC → returns total USD value (e.g., $6000 + $4000 = $10000)
+     * @notice Retorna o valor total em USD do colateral do usuário.
+     * @dev Soma `getUsdValue` para todos os tokens aceitos.
+     * @param user Endereço do usuário.
+     * @return totalCollateralValueInUsd Valor em USD (18 decimais).
      */
     function getAccountCollateralValue(
         address user
@@ -559,23 +518,11 @@ contract DSCEngine is ReentrancyGuard {
     }
 
     /**
-     * @notice Converts token amount to USD value using Chainlink price feeds
-     * @dev Fetches real-time price from Chainlink oracle and calculates USD value with proper decimal handling.
-     * Uses price precision constants to convert Chainlink's 8-decimal prices to 18-decimal precision.
-     * @param token The address of the token to get price for
-     * @param amount The amount of tokens to convert (in wei/smallest unit)
-     * @return The USD value with 18 decimal precision
-     *
-     * Process:
-     * 1. Get Chainlink price feed contract for the token from s_priceFeeds mapping
-     * 2. Call latestRoundData() to get current price (returns int256 with 8 decimals)
-     * 3. Apply formula: (price * ADDITIONNAL_FEED_PRECISION * amount) / PRECISION
-     *
-     * Precision handling:
-     * - ADDITIONNAL_FEED_PRECISION (1e10): Converts Chainlink's 8 decimals to 18 decimals
-     * - PRECISION (1e18): Maintains 18-decimal precision in final result
-     *
-     * Example: getUsdValue(ETH_address, 2e18) with ETH price $3000 → returns $6000 in 18-decimal format
+     * @notice Converte quantidade do token para USD.
+     * @dev Preço Chainlink (8d) ajustado para 18d.
+     * @param token Token de colateral.
+     * @param amount Quantidade do token.
+     * @return Valor em USD (18 decimais).
      */
     function getUsdValue(
         address token,
