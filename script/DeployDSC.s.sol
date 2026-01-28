@@ -25,10 +25,14 @@ contract DeployDSC is Script {
         tokenAddresses = [weth, wbtc];
         priceFeedAddresses = [wethUsdPriceFeed, wbtcUsdPriceFeed];
 
-        vm.startBroadcast();
+        // Broadcast transactions using the resolved deployer key to ensure ownership calls succeed
+        vm.startBroadcast(deployerKey);
 
-        // Deploy the Decentralized Stable Coin
-        DecentralizedStableCoin dsc = new DecentralizedStableCoin(msg.sender);
+        // Resolve EOA address from deployerKey for proper ownership during broadcast
+        address ownerEOA = vm.addr(deployerKey);
+
+        // Deploy the Decentralized Stable Coin with the EOA as the initial owner
+        DecentralizedStableCoin dsc = new DecentralizedStableCoin(ownerEOA);
 
         // Deploy the DSCEngine with the address of the DSC
         DSCEngine dscEngine = new DSCEngine(tokenAddresses, priceFeedAddresses, address(dsc));
@@ -36,8 +40,9 @@ contract DeployDSC is Script {
         // Transfer ownership of the DSC to the DSCEngine
         dsc.transferOwnership(address(dscEngine));
 
-        return (dsc, dscEngine, helperConfig);
-
+        // End broadcast before returning so tests can use prank
         vm.stopBroadcast();
+
+        return (dsc, dscEngine, helperConfig);
     }
 }
