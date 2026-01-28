@@ -219,7 +219,6 @@ contract DSCEngine is ReentrancyGuard {
         address tokenCollateralAddress,
         uint256 amountCollateral
     ) public moreThanZero(amountCollateral) nonReentrant {
-        
         _redeemCollateral(
             tokenCollateralAddress,
             amountCollateral,
@@ -314,7 +313,8 @@ contract DSCEngine is ReentrancyGuard {
 
         // 4. Calcula o total de colateral a ser resgatado (dívida + bônus)
         // Exemplo: 0.05 ETH + 0.005 ETH = 0.055 ETH
-        uint256 totalCollateralToRedeem = tokenAmountFromDebtCovered + bonusCollateral;
+        uint256 totalCollateralToRedeem = tokenAmountFromDebtCovered +
+            bonusCollateral;
         _redeemCollateral(
             collateralAddress,
             totalCollateralToRedeem,
@@ -327,7 +327,7 @@ contract DSCEngine is ReentrancyGuard {
 
         // 6. Verifica se o health factor do usuário melhorou após a liquidação
         uint256 endingUserHealthFactor = _healthFactor(user);
-        if(endingUserHealthFactor <= startingUserHealthFactor){
+        if (endingUserHealthFactor <= startingUserHealthFactor) {
             revert DSCEngine__HealthFactorNotImproved();
         }
 
@@ -350,12 +350,20 @@ contract DSCEngine is ReentrancyGuard {
      * @dev Ninguém chama essa função antes de verificar o health factor.
      * @custom:reverts DSCEngine__TransferFailed.
      */
-    function _burnDsc(uint256 amountDscToBurn, address onBehalfOf, address dscFrom) private {
-           // reduce the minted DSC amount
+    function _burnDsc(
+        uint256 amountDscToBurn,
+        address onBehalfOf,
+        address dscFrom
+    ) private {
+        // reduce the minted DSC amount
         s_dscMinted[onBehalfOf] -= amountDscToBurn;
 
         // transfer DSC from user to DSCEngine contract
-        bool success = i_dsc.transferFrom(dscFrom, address(this), amountDscToBurn);
+        bool success = i_dsc.transferFrom(
+            dscFrom,
+            address(this),
+            amountDscToBurn
+        );
 
         // check if transfer was successful
         if (!success) {
@@ -397,9 +405,7 @@ contract DSCEngine is ReentrancyGuard {
         address to
     ) private {
         // 1. Update user's collateral balance
-        s_collateralDeposited[from][
-            tokenCollateralAddress
-        ] -= amountCollateral;
+        s_collateralDeposited[from][tokenCollateralAddress] -= amountCollateral;
 
         // 2. Emit event for successful redemption
         emit CollateralRedeemed(
@@ -539,5 +545,15 @@ contract DSCEngine is ReentrancyGuard {
         // convert price to uint256
         return
             (uint256(price) * ADDITIONNAL_FEED_PRECISION * amount) / PRECISION;
+    }
+
+    // return the account information for msg.sender
+    function getAccountInformation(address user)
+        external
+        view
+        returns (uint256 totalDscMinted, uint256 collateralValueInUsd)
+    {
+        // return the account information for the specified user
+        (totalDscMinted, collateralValueInUsd) = _getAccountInformation(user);
     }
 }
