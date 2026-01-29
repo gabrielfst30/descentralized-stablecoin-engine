@@ -463,6 +463,23 @@ contract DSCEngine is ReentrancyGuard {
     }
 
     /**
+     * @notice Calcula o health factor dado dívida e valor de colateral.
+     * @dev HF = (colateral_USD * THRESHOLD / PRECISION) / dívida_DSC.
+     * @param totalDscMinted Dívida total em DSC.
+     * @param collateralValueInUsd Valor do colateral em USD.
+     * @return Health factor com 18 decimais.
+     */
+    function _calculateHealthFactor(
+        uint256 totalDscMinted,
+        uint256 collateralValueInUsd
+    ) internal pure returns (uint256) {
+        if (totalDscMinted == 0) return type(uint256).max;
+        uint256 collateralAdjustedForThreshold = (collateralValueInUsd *
+            LIQUIDATION_THRESHOLD) / LIQUIDATION_PRECISION;
+        return (collateralAdjustedForThreshold * PRECISION) / totalDscMinted;
+    }
+
+    /**
      * @notice Reverte se HF do usuário estiver abaixo do mínimo.
      * @dev Calcula `_healthFactor(user)` e compara com `MIN_HEALTH_FACTOR`.
      * @param user Usuário alvo.
@@ -478,6 +495,19 @@ contract DSCEngine is ReentrancyGuard {
     /////////////////////////////////////////
     // Public and External View Functions ///
     /////////////////////////////////////////
+    /**
+     * @notice Calcula o health factor dado dívida e valor de colateral.
+     * @dev HF = (colateral_USD * THRESHOLD / PRECISION) / dívida_DSC.
+     * @param totalDscMinted Dívida total em DSC.
+     * @param collateralValueInUsd Valor do colateral em USD.
+     * @return Health factor com 18 decimais.
+     */
+    function calculateHealthFactor(
+        uint256 totalDscMinted,
+        uint256 collateralValueInUsd
+    ) external pure returns (uint256) {
+        return _calculateHealthFactor(totalDscMinted, collateralValueInUsd);
+    }
 
     /**
      * @notice Converte USD (18d) em quantidade do token.
@@ -548,7 +578,9 @@ contract DSCEngine is ReentrancyGuard {
     }
 
     // return the account information for msg.sender
-    function getAccountInformation(address user)
+    function getAccountInformation(
+        address user
+    )
         external
         view
         returns (uint256 totalDscMinted, uint256 collateralValueInUsd)
