@@ -15,21 +15,26 @@ import {DSCEngine} from "../../src/DSCEngine.sol";
 import {DecentralizedStableCoin} from "../../src/DecentralizedStableCoin.sol";
 import {HelperConfig} from "../../script/HelperConfig.s.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {Handler} from "./Handler.t.sol";
 
 contract InvariantsTest is StdInvariant, Test {
     // aqui vamos ter o setup do nosso teste, onde vamos implantar os contratos e criar o manipulador
-    DeployDSC deployer; // renomenado para deployer
-    DSCEngine dscEngine; // renomenado para dscEngine
-    DecentralizedStableCoin dsc; // renomenado para dsc
-    HelperConfig helperConfig; // renomenado para helperConfig
-    address weth; // renomenado para weth
-    address wbtc; // renomenado para btc
+    DeployDSC deployer; // variável do tipo DeployDSC
+    DSCEngine dscEngine; // variável do tipo DSCEngine
+    DecentralizedStableCoin dsc; // variável do tipo DecentralizedStableCoin
+    HelperConfig helperConfig; // variável do tipo HelperConfig
+    address weth; // endereço do token WETH
+    address wbtc; // endereço do token WBTC
+    Handler handler; // variável do tipo Handler
 
     function setUp() external {
         deployer = new DeployDSC(); // instanciando o deployer
         (dsc, dscEngine, helperConfig) = deployer.run(); // rodando o deployer para obter as instâncias dos contratos
         (, , weth, wbtc, ) = helperConfig.activeNetworkConfig(); // pegando os endereços dos tokens do helperConfig
-        targetContract(address(dscEngine)); // definindo o contrato alvo para as invariantes
+        // targetContract(address(dscEngine)); // definindo o contrato alvo para as invariantes
+        handler = new Handler(dscEngine, dsc); // instanciando o manipulador
+        targetContract(address(handler)); // definindo o manipulador como o contrato alvo para as invariants
+        // Não ligue em resgatar garantias ao menos que exista garantias para resgatar.
     }
 
     // INVARIANTE: O colateral deve ser maior que o totalSupply do DSC
