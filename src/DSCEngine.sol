@@ -588,4 +588,9 @@ contract DSCEngine is ReentrancyGuard {
         // return the account information for the specified user
         (totalDscMinted, collateralValueInUsd) = _getAccountInformation(user);
     }
+
+    // return the collateral tokens accepted by the protocol
+    function getCollateralTokens() external view returns (address[] memory) {
+        return s_collateralTokens;
+    }
 }
