@@ -3,10 +3,10 @@
 
 pragma solidity ^0.8.30;
 
-import { Test } from "forge-std/Test.sol";
-import { DSCEngine } from "../../src/DSCEngine.sol";
-import { DecentralizedStableCoin } from "../../src/DecentralizedStableCoin.sol";
-import { ERC20Mock } from "@openzeppelin/contracts/mocks/token/ERC20Mock.sol";
+import {Test} from "forge-std/Test.sol";
+import {DSCEngine} from "../../src/DSCEngine.sol";
+import {DecentralizedStableCoin} from "../../src/DecentralizedStableCoin.sol";
+import {ERC20Mock} from "@openzeppelin/contracts/mocks/token/ERC20Mock.sol";
 
 contract Handler is Test {
     DecentralizedStableCoin dsc;
@@ -20,16 +20,18 @@ contract Handler is Test {
     constructor(DSCEngine _dscEngine, DecentralizedStableCoin _dsc) {
         dscEngine = _dscEngine;
         dsc = _dsc;
-        
+
         // pegando os endereços dos tokens de colateral do DSCEngine e instanciando os mocks para interagir com eles
         address[] memory collateralTokens = dscEngine.getCollateralTokens();
         weth = ERC20Mock(collateralTokens[0]);
         wbtc = ERC20Mock(collateralTokens[1]);
-
     }
 
     // redeem collateral
-    function depositCollateral(uint256 collateralSeed, uint256 amountCollateral) public {
+    function depositCollateral(
+        uint256 collateralSeed,
+        uint256 amountCollateral
+    ) public {
         // aqui vamos depositar o colateral no protocolo, mas antes disso, precisamos pegar o endereço do colateral com base no collateralSeed, por exemplo, se for 0, pegamos o endereço do WETH, se for 1, pegamos o endereço do WBTC
         ERC20Mock collateral = _getCollateralFromSeed(collateralSeed);
 
@@ -46,8 +48,34 @@ contract Handler is Test {
         vm.stopPrank();
     }
 
+    function redeemCollateral(
+        uint256 collateralSeed,
+        uint256 amountCollateral
+    ) public {
+        // aqui vamos resgatar o colateral do protocolo, mas antes disso, precisamos pegar o endereço do colateral com base no collateralSeed, por exemplo, se for 0, pegamos o endereço do WETH, se for 1, pegamos o endereço do WBTC
+        ERC20Mock collateral = _getCollateralFromSeed(collateralSeed);
+
+        // limitando o tamanho do resgate para evitar overflow (total que o usuário tem como colateral no protocolo)
+        // uint256 maxCollateralToRedeem = dscEngine.getCollateralBalanceOfUser(
+        //     address(collateral),
+        //     msg.sender
+        // );
+
+        // se o usuário não tiver colateral suficiente para resgatar, o teste vai falhar, então precisamos garantir que o amountCollateral seja menor ou igual ao maxCollateralToRedeem
+        amountCollateral = bound(amountCollateral, 0, MAX_DEPOSIT_SIZE);
+
+        if (amountCollateral == 0) {
+            return; // se o amountCollateral for 0, não faz sentido tentar resgatar, então apenas retornamos
+        }
+
+        // resgatando o colateral do protocolo
+        dscEngine.redeemCollateral(address(collateral), amountCollateral);
+    }
+
     // Helper functions
-    function _getCollateralFromSeed(uint256 collateralSeed) private view returns (ERC20Mock) {
+    function _getCollateralFromSeed(
+        uint256 collateralSeed
+    ) private view returns (ERC20Mock) {
         // aqui vamos retornar o endereço do colateral com base no collateralSeed, por exemplo, se for 0, retornamos o endereço do WETH, se for 1, retornamos o endereço do WBTC
         if (collateralSeed % 2 == 0) {
             return weth;
@@ -55,5 +83,4 @@ contract Handler is Test {
             return wbtc;
         }
     }
-
 }
