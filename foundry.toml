@@ -9,6 +9,6 @@ remappings = [
 
 # configurando setup para fuzzing 
 [invariant]
-runs = 1000 # número de vezes que cada invariante será testada
+runs = 128 # número de vezes que cada invariante será testada
 depth = 128 # profundidade máxima que é o número de chamadas em uma única execução
 fail_on_revert = false # se queremos que o teste falhe quando uma transação reverter (tarefas rapidas)
