@@ -12,3 +12,7 @@ remappings = [
 runs = 128 # número de vezes que cada invariante será testada
 depth = 128 # profundidade máxima que é o número de chamadas em uma única execução
 fail_on_revert = false # se queremos que o teste falhe quando uma transação reverter (tarefas rapidas)
+
+# @notice Define o comportamento quando uma transação reverter durante testes/invariants.
+# `true`  = trata qualquer `revert` como falha e interrompe a execução (útil para depuração/CI).
+# `false` = não trata `revert` como falha e continua a execução (útil para fuzz/invariant runs).
