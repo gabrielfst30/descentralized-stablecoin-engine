@@ -27,6 +27,29 @@ contract Handler is Test {
         wbtc = ERC20Mock(collateralTokens[1]);
     }
 
+    // Mint DSC
+    function mintDsc(uint256 amount) public {
+        // garantindo que o usuário tenha colateral maior que o valor do mint.
+        (uint256 totalDscMinted, uint256 collateralValueInUsd) = dscEngine
+            .getAccountInformation(msg.sender);
+
+        // calculo para garantir que o usuário tem metade do valor do colateral em DSC (200%)
+        uint256 maxDscToMint = (collateralValueInUsd / 2) - totalDscMinted;
+
+        // se o resultado for menor que zero ele não tem colateral suficiente
+        if (maxDscToMint < 0) {
+            return; // se o usuário não tiver colateral suficiente para mintar, o teste vai falhar, então apenas retornamos
+        }
+        // bound (x, min, max)
+        amount = bound(amount, 0, uint256(maxDscToMint));
+        if (amount == 0) {
+            return; // se o amount for 0, não faz sentido tentar mintar, então apenas retornamos
+        }
+        vm.startPrank(msg.sender);
+        dscEngine.mintDsc(amount);
+        vm.stopPrank();
+    }
+
     // redeem collateral
     function depositCollateral(
         uint256 collateralSeed,
