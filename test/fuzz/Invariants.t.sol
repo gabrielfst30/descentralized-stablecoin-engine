@@ -51,7 +51,29 @@ contract InvariantsTest is StdInvariant, Test {
         console.log("Valor total de WETH depositado (em USD):", wethValue);
         console.log("Valor total de WBTC depositado (em USD):", wbtcValue);
         console.log("Total Supply do DSC:", totalSupply);
+        console.log("Times mintDsc is called:", handler.timesMintIsCalled());
 
         assert(wethValue + wbtcValue >= totalSupply); // verificando a invariante mesmo que o valor seja 0
+    }
+
+    // INVARIANTE: Getter functions nunca devem reverter
+    function invariant_getterFunctionsNeverRevert() public view {
+        // basic DSC getter
+        dsc.totalSupply();
+
+        // collateral getters (safe calls with zero values where applicable)
+        dscEngine.getCollateralBalanceOfUser(weth, address(this));
+        dscEngine.getCollateralBalanceOfUser(wbtc, address(this));
+        dscEngine.getAccountInformation(address(this));
+
+        // all other public/external view getters from DSCEngine
+        dscEngine.getCollateralTokens();
+        dscEngine.getUsdValue(weth, 0);
+        dscEngine.getUsdValue(wbtc, 0);
+        dscEngine.getAccountCollateralValue(address(this));
+        dscEngine.getTokenAmountFromUsd(weth, 0);
+        dscEngine.calculateHealthFactor(0, 0);
+        // call placeholder (exists but has empty body)
+        dscEngine.getHealthFactor();
     }
 }
