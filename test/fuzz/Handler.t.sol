@@ -15,6 +15,10 @@ contract Handler is Test {
     ERC20Mock weth;
     ERC20Mock wbtc;
 
+    // contador para rastrear quantas vezes a função mintDsc é chamada
+    uint256 public timesMintIsCalled;
+    address[] public usersWithCollateralDeposited;
+
     uint256 MAX_DEPOSIT_SIZE = type(uint96).max; // limitando o tamanho do depósito para evitar overflow
 
     constructor(DSCEngine _dscEngine, DecentralizedStableCoin _dsc) {
@@ -28,10 +32,16 @@ contract Handler is Test {
     }
 
     // Mint DSC
-    function mintDsc(uint256 amount) public {
+    function mintDsc(uint256 amount, uint256 addressSeed) public {
+        if(usersWithCollateralDeposited.length == 0) {
+            return; // se não houver usuários com colateral, não faz sentido tentar mintar
+        }
+        // selecionando um índice determinístico (pseudo‑aleatório)
+        address sender = usersWithCollateralDeposited[addressSeed % usersWithCollateralDeposited.length];
+        
         // garantindo que o usuário tenha colateral maior que o valor do mint.
         (uint256 totalDscMinted, uint256 collateralValueInUsd) = dscEngine
-            .getAccountInformation(msg.sender);
+            .getAccountInformation(sender);
 
         // calculo para garantir que o usuário tem metade do valor do colateral em DSC (200%)
         uint256 maxDscToMint = (collateralValueInUsd / 2) - totalDscMinted;
@@ -45,9 +55,10 @@ contract Handler is Test {
         if (amount == 0) {
             return; // se o amount for 0, não faz sentido tentar mintar, então apenas retornamos
         }
-        vm.startPrank(msg.sender);
+        vm.startPrank(sender);
         dscEngine.mintDsc(amount);
         vm.stopPrank();
+        timesMintIsCalled++;
     }
 
     // redeem collateral
@@ -69,6 +80,9 @@ contract Handler is Test {
         // depositando o colateral no protocolo
         dscEngine.depositCollateral(address(collateral), amountCollateral);
         vm.stopPrank();
+
+        // adicionando o usuário à lista de usuários que depositaram colateral (tomar cuidado com double push)
+        usersWithCollateralDeposited.push(msg.sender); 
     }
 
     function redeemCollateral(
