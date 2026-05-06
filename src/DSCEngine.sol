@@ -26,14 +26,10 @@
 pragma solidity ^0.8.20;
 
 import {DecentralizedStableCoin} from "./DecentralizedStableCoin.sol";
-import {
-    ReentrancyGuard
-} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 // interface for ERC20 tokens to make interactions
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {
-    AggregatorV3Interface
-} from "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
+import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 
 /**
  * @title Decentralized Stable Coin
@@ -594,8 +590,17 @@ contract DSCEngine is ReentrancyGuard {
         return s_collateralTokens;
     }
 
+    function getCollateralTokenPriceFeed(
+        address token
+    ) external view returns (address) {
+        return s_priceFeeds[token];
+    }
+
     // return the collateral balance of a user for a specific token
-    function getCollateralBalanceOfUser(address token, address user) external view returns (uint256) {
+    function getCollateralBalanceOfUser(
+        address token,
+        address user
+    ) external view returns (uint256) {
         return s_collateralDeposited[user][token];
     }
 }
