@@ -7,6 +7,7 @@ import {Test} from "forge-std/Test.sol";
 import {DSCEngine} from "../../src/DSCEngine.sol";
 import {DecentralizedStableCoin} from "../../src/DecentralizedStableCoin.sol";
 import {ERC20Mock} from "@openzeppelin/contracts/mocks/token/ERC20Mock.sol";
+import {MockV3Aggregator} from "../mocks/MockV3Aggregator.sol";
 
 contract Handler is Test {
     DecentralizedStableCoin dsc;
@@ -18,6 +19,7 @@ contract Handler is Test {
     // contador para rastrear quantas vezes a função mintDsc é chamada
     uint256 public timesMintIsCalled;
     address[] public usersWithCollateralDeposited;
+    MockV3Aggregator public ethUsdPriceFeed;
 
     uint256 MAX_DEPOSIT_SIZE = type(uint96).max; // limitando o tamanho do depósito para evitar overflow
 
@@ -29,6 +31,12 @@ contract Handler is Test {
         address[] memory collateralTokens = dscEngine.getCollateralTokens();
         weth = ERC20Mock(collateralTokens[0]);
         wbtc = ERC20Mock(collateralTokens[1]);
+
+        // instanciando o mock do price feed para interagir com ele
+        // Isso NÃO chama o construtor do MockV3Aggregator
+        // Apenas diz: "esse address que veio do getCollateralTokenPriceFeed,
+        // trate-o como MockV3Aggregator"
+        ethUsdPriceFeed = MockV3Aggregator(dscEngine.getCollateralTokenPriceFeed(address(weth)));
     }
 
     // Mint DSC
@@ -108,6 +116,13 @@ contract Handler is Test {
         // resgatando o colateral do protocolo
         dscEngine.redeemCollateral(address(collateral), amountCollateral);
     }
+
+    // atualizando o preço do colateral
+    // isso quebra nossa invariante por que se o preço do colateral cair muito, os usuários podem ficar subcolateralizados e serem liquidados, o que pode levar a uma situação em que o protocolo não tem colateral suficiente para cobrir o valor do DSC em circulação, ou seja, a soma do valor do colateral é menor que a soma do valor do DSC, o que é um grande problema para um stablecoin descentralizado
+    // function updateCollateralPrice(uint96 newPrice) public {
+    //     int256 newPriceInt = int256(uint256(newPrice));
+    //     ethUsdPriceFeed.updateAnswer(newPriceInt);
+    // }
 
     // Helper functions
     function _getCollateralFromSeed(
