@@ -30,6 +30,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 // interface for ERC20 tokens to make interactions
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
+import {OracleLib} from "../script/libraries/OracleLib.sol";
 
 /**
  * @title Decentralized Stable Coin
@@ -61,6 +62,11 @@ contract DSCEngine is ReentrancyGuard {
     error DSCEngine__MintFailed();
     error DSCEngine__HealthFactorOk();
     error DSCEngine__HealthFactorNotImproved();
+
+    ////////////////
+    // Type    //
+    ///////////////
+    using OracleLib for AggregatorV3Interface;
 
     ////////////////////////
     // State Variables    //
@@ -521,7 +527,7 @@ contract DSCEngine is ReentrancyGuard {
             s_priceFeeds[token]
         );
         // Busca o preço atual (retorna com 8 decimais)
-        (, int256 price, , , ) = priceFeed.latestRoundData();
+        (, int256 price, ,) = priceFeed.staleCheckLatestRoundData();
         // Fórmula: (USD_valor * 1e18) / (preço * 1e10)
         // Exemplo: ($1000 * 1e18) / ($2000e8 * 1e10) = 0.5 ETH
         return
